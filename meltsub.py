@@ -1,13 +1,18 @@
 import io
 import subprocess
+from collections import Iterable
 
 import cv2
-import pysubs2
 
-softsub_video = cv2.VideoCapture("softsub.mkv")
-hardsub_video = cv2.VideoCapture("hardsub.mp4")
-subs = pysubs2.load("softsub.ass")
-hardsub_lang = "fra"
+softsub_path = "softsub.mkv"
+hardsub_path = "hardsub.mp4"
+subtitles_path = "subtitles.srt"
+subtitles_lang = "fra"
+align_on_hardsubs = False
+align_frames = 5
+
+softsub_video = cv2.VideoCapture(softsub_path)
+hardsub_video = cv2.VideoCapture(hardsub_path)
 
 softsub_fps = softsub_video.get(cv2.CAP_PROP_FPS)
 hardsub_fps = hardsub_video.get(cv2.CAP_PROP_FPS)
@@ -20,13 +25,19 @@ def median(numbers):
 	else:
 		return numbers[center]
 
+def frame_sum(frame):
+	height, width = frame.shape[:2]
+	s = sum(cv2.reduce(frame, 1, cv2.REDUCE_SUM, dtype=cv2.CV_32S))[0]
+	if isinstance(s, Iterable):
+		s = sum(s)
+	return s / (height * width)
+
 def frame_diff(a, b):
 	diff = cv2.subtract(a, b)
 	#diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-	height, width = diff.shape[:2]
-	return sum(sum(cv2.reduce(diff, 1, cv2.REDUCE_SUM, dtype=cv2.CV_32S))[0]) / (height * width)
+	return frame_sum(diff)
 
-def find_key_frames(video, threshold=70, nbr_frames=5):
+def find_key_frames(video, threshold=70):
 	key_frames = {}
 
 	fps = video.get(cv2.CAP_PROP_FPS)
@@ -35,7 +46,7 @@ def find_key_frames(video, threshold=70, nbr_frames=5):
 	ok, last = video.read()
 	if not ok:
 		return key_frames
-	while(len(key_frames) < nbr_frames):
+	while(len(key_frames) < align_frames):
 		ok, current = video.read()
 		if not ok:
 			break
@@ -87,7 +98,7 @@ def ocr(img):
 	if not ok:
 		raise Exception("Cannot encode image")
 
-	p = subprocess.Popen(['/usr/bin/tesseract', 'stdin', 'stdout', '-l', hardsub_lang], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+	p = subprocess.Popen(['/usr/bin/tesseract', 'stdin', 'stdout', '-l', subtitles_lang], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 	p.stdin.write(buf)
 	p.stdin.close()
@@ -102,9 +113,16 @@ def ocr(img):
 
 	return "\n".join(lines)
 
+def timecode(ms):
+	s, ms = divmod(ms, 1000)
+	min, s = divmod(s, 60)
+	h, min = divmod(min, 60)
+	return "{:02}:{:02}:{:02},{:03}".format(h, min, s, ms)
+
 initial_pos = 24 * 20
 
-# Align videos
+print("Aligning videos on {} frames...".format(align_frames))
+
 softsub_video.set(cv2.CAP_PROP_POS_FRAMES, initial_pos)
 hardsub_video.set(cv2.CAP_PROP_POS_FRAMES, initial_pos)
 softsub_key_frames = find_key_frames(softsub_video)
@@ -116,46 +134,88 @@ hardsub_video.set(cv2.CAP_PROP_POS_FRAMES, 0)
 pos_diff_sec = match_keyframes(softsub_key_frames, hardsub_key_frames)
 print("pos_diff_sec={}".format(pos_diff_sec))
 
-subs.sort()
-for event in subs:
-	start = event.start + 100
-	softsub_video.set(cv2.CAP_PROP_POS_MSEC, start)
-	hardsub_video.set(cv2.CAP_PROP_POS_MSEC, start - pos_diff_sec)
+print("Generating subtitles...")
 
-	ok, softsub_frame = softsub_video.read()
-	if not ok:
-		break
+with open(subtitles_path, "w") as f:
+	threshold = 5
+	wait_dur = 1
+	#wait_dur = int(1/softsub_fps*1000)
 
-	ok, hardsub_frame = hardsub_video.read()
-	if not ok:
-		break
+	sub_index = 0
+	sub_frame = None
+	sub_start = 0
+	while(True):
+		softsub_pos = softsub_video.get(cv2.CAP_PROP_POS_FRAMES)
+		softsub_t = softsub_pos/softsub_fps
 
-	#diff = cv2.absdiff(softsub_frame, hardsub_frame)
-	diff = cv2.subtract(255-softsub_frame, 255-hardsub_frame)
-	diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-	#ok, diff = cv2.threshold(diff, 250, 255, cv2.THRESH_BINARY)
-	ok, diff = cv2.threshold(diff, 254, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
-	diff = 255 - diff
-	#diff = autocrop(diff, threshold=50)
-	cv2.imshow('diff', diff)
-	cv2.waitKey(0)
+		ok, softsub_frame = softsub_video.read()
+		if not ok:
+			break
 
-	#key = cv2.waitKey(int(1/softsub_fps*1000))
-	#if key == ord(' '):
-	#	cv2.waitKey(0)
-	#if key == ord('q'):
-	#	break
-	#if key == ord('s'):
-	#	cv2.imwrite("output.png", diff)
+		# TODO: this works in one way only
+		hardsub_frame = None
+		hardsub_t = 0
+		while(True):
+			hardsub_pos = hardsub_video.get(cv2.CAP_PROP_POS_FRAMES)
+			hardsub_t = hardsub_pos/hardsub_fps
 
-	text = ocr(diff)
-	print("{}: {}".format(event.start, text))
+			ok, hardsub_frame = hardsub_video.read()
+			if not ok:
+				break
 
-	event.text = text
+			if hardsub_t >= softsub_t - pos_diff_sec:
+				break
+		if hardsub_frame is None:
+			break
+
+		#diff = cv2.absdiff(softsub_frame, hardsub_frame)
+		diff = cv2.subtract(255-softsub_frame, 255-hardsub_frame)
+		diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+		#ok, diff = cv2.threshold(diff, 250, 255, cv2.THRESH_BINARY)
+		ok, diff = cv2.threshold(diff, 254, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+		#diff = autocrop(diff, threshold=50)
+
+		s = frame_sum(diff)
+
+		diff = 255 - diff
+
+		cv2.imshow('diff', diff)
+		key = cv2.waitKey(wait_dur)
+		if key == ord(' '):
+			cv2.waitKey(0)
+		if key == ord('q'):
+			break
+		if key == ord('s'):
+			cv2.imwrite("output.png", diff)
+
+		t = softsub_t
+		if align_on_hardsubs:
+			t = hardsub_t
+
+		if s > 0.1 and s < threshold:
+			if sub_frame is None:
+				sub_frame = diff
+				sub_start = int(t * 1000)
+				print("{}-".format(sub_start), end="", flush=True)
+		else:
+			if sub_frame is not None:
+				sub_end = int(t * 1000)
+
+				text = ocr(sub_frame)
+				if len(text) > 0:
+					print("{}: {}".format(sub_end, text))
+
+					f.write("{}\n".format(sub_index))
+					f.write("{} --> {}\n".format(timecode(sub_start), timecode(sub_end)))
+					f.write(text+"\n\n")
+				else:
+					print("{}: <skipped: no data>".format(sub_end))
+
+				sub_index += 1
+				sub_frame = None
+			in_sub = False
 
 softsub_video.release()
 hardsub_video.release()
-
-subs.save("hardsub.ass")
 
 cv2.destroyAllWindows()
