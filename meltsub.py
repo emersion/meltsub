@@ -134,7 +134,7 @@ hardsub_video.set(cv2.CAP_PROP_POS_FRAMES, 0)
 pos_diff_sec = match_keyframes(softsub_key_frames, hardsub_key_frames)
 print("pos_diff_sec={}".format(pos_diff_sec))
 
-print("Generating subtitles...")
+print("Writing {} subtitles to {}...".format(subtitles_lang, subtitles_path))
 
 with open(subtitles_path, "w") as f:
 	threshold = 5
@@ -196,14 +196,14 @@ with open(subtitles_path, "w") as f:
 			if sub_frame is None:
 				sub_frame = diff
 				sub_start = int(t * 1000)
-				print("{}-".format(sub_start), end="", flush=True)
+				print("{} - ".format(timecode(sub_start)), end="", flush=True)
 		else:
 			if sub_frame is not None:
 				sub_end = int(t * 1000)
 
 				text = ocr(sub_frame)
 				if len(text) > 0:
-					print("{}: {}".format(sub_end, text))
+					print("{} {}".format(timecode(sub_end), text))
 
 					f.write("{}\n".format(sub_index))
 					f.write("{} --> {}\n".format(timecode(sub_start), timecode(sub_end)))
