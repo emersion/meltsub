@@ -11,6 +11,7 @@ I take no legal responsibility for anything this code is used for. This is purel
 Dependencies:
 * opencv
 * tesseract
+* python-pysubs2 (`pip install pysubs2`)
 
 ```shell
 python meltsub.py
