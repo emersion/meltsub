@@ -1,6 +1,7 @@
-import io
-import subprocess
 from collections import Iterable
+import io
+import re
+import subprocess
 
 import cv2
 
@@ -128,8 +129,22 @@ def timecode(ms):
 	h, min = divmod(min, 60)
 	return "{:02}:{:02}:{:02},{:03}".format(h, min, s, ms)
 
+replacements = [
+	("\n—", "\n-"),
+	("…", "..."),
+]
+
+def cleanup(text):
+	text = "\n"+text+"\n"
+
+	for (a, b) in replacements:
+		text = text.replace(a, b)
+
+	return text.strip()
+
 def extract_subs(f, softsub_video, hardsub_video, pos_diff_sec):
 	threshold = 5
+	#wait_dur = -1
 	wait_dur = 1
 	#wait_dur = int(1/softsub_fps*1000)
 
@@ -202,6 +217,7 @@ def extract_subs(f, softsub_video, hardsub_video, pos_diff_sec):
 
 				if sub_end - sub_start > 300:
 					text = ocr(sub_frame)
+					text = cleanup(text)
 					if len(text) > 0:
 						print("{} {}".format(timecode(sub_end), text))
 
