@@ -10,6 +10,7 @@ subtitles_path = "subtitles.srt"
 subtitles_lang = "fra"
 align_on_hardsubs = False
 align_frames = 5
+align_from = 3*60 # seconds
 
 softsub_video = cv2.VideoCapture(softsub_path)
 hardsub_video = cv2.VideoCapture(hardsub_path)
@@ -64,6 +65,8 @@ def find_key_frames(video, threshold=70):
 		#	cv2.waitKey(int(1/fps*1000))
 		last = current
 
+	cv2.destroyAllWindows()
+
 	return key_frames
 
 def match_keyframes(softsub_frames, hardsub_frames, max_diff=10):
@@ -87,10 +90,15 @@ def match_keyframes(softsub_frames, hardsub_frames, max_diff=10):
 
 		pos_diff_sec = softsub_pos/softsub_fps - best_pos/hardsub_fps
 		print("image_diff={} pos_diff_sec={}".format(best_diff, pos_diff_sec))
+
 		#cv2.imshow("softsub", softsub_frame)
 		#cv2.imshow("hardsub", best_frame)
 		#cv2.waitKey(0)
+
 		matches.append(pos_diff_sec)
+
+	cv2.destroyAllWindows()
+
 	return median(matches)
 
 def ocr(img):
@@ -98,7 +106,8 @@ def ocr(img):
 	if not ok:
 		raise Exception("Cannot encode image")
 
-	p = subprocess.Popen(['/usr/bin/tesseract', 'stdin', 'stdout', '-l', subtitles_lang], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+	args = ["/usr/bin/tesseract", "stdin", "stdout", "-l", subtitles_lang]
+	p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
 	p.stdin.write(buf)
 	p.stdin.close()
@@ -119,24 +128,7 @@ def timecode(ms):
 	h, min = divmod(min, 60)
 	return "{:02}:{:02}:{:02},{:03}".format(h, min, s, ms)
 
-initial_pos = 24 * 20
-
-print("Aligning videos on {} frames...".format(align_frames))
-
-softsub_video.set(cv2.CAP_PROP_POS_FRAMES, initial_pos)
-hardsub_video.set(cv2.CAP_PROP_POS_FRAMES, initial_pos)
-softsub_key_frames = find_key_frames(softsub_video)
-hardsub_key_frames = find_key_frames(hardsub_video)
-softsub_video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-hardsub_video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-# pos_diff_sec = softsub_pos - hardsub_pos
-pos_diff_sec = match_keyframes(softsub_key_frames, hardsub_key_frames)
-print("pos_diff_sec={}".format(pos_diff_sec))
-
-print("Writing {} subtitles to {}...".format(subtitles_lang, subtitles_path))
-
-with open(subtitles_path, "w") as f:
+def extract_subs(f, softsub_video, hardsub_video, pos_diff_sec):
 	threshold = 5
 	wait_dur = 1
 	#wait_dur = int(1/softsub_fps*1000)
@@ -145,48 +137,55 @@ with open(subtitles_path, "w") as f:
 	sub_frame = None
 	sub_start = 0
 	while(True):
-		softsub_pos = softsub_video.get(cv2.CAP_PROP_POS_FRAMES)
-		softsub_t = softsub_pos/softsub_fps
-
 		ok, softsub_frame = softsub_video.read()
 		if not ok:
 			break
 
-		# TODO: this works in one way only
+		softsub_pos = softsub_video.get(cv2.CAP_PROP_POS_FRAMES)
+		softsub_t = softsub_pos/softsub_fps
+
 		hardsub_frame = None
 		hardsub_t = 0
+		hardsub_eof = False
 		while(True):
 			hardsub_pos = hardsub_video.get(cv2.CAP_PROP_POS_FRAMES)
 			hardsub_t = hardsub_pos/hardsub_fps
 
-			ok, hardsub_frame = hardsub_video.read()
-			if not ok:
-				break
-
 			if hardsub_t >= softsub_t - pos_diff_sec:
 				break
-		if hardsub_frame is None:
+
+			ok, hardsub_frame = hardsub_video.read()
+			if not ok:
+				hardsub_eof = True
+				break
+		if hardsub_eof:
 			break
+		if hardsub_frame is None:
+			continue
 
 		#diff = cv2.absdiff(softsub_frame, hardsub_frame)
 		diff = cv2.subtract(255-softsub_frame, 255-hardsub_frame)
 		diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-		#ok, diff = cv2.threshold(diff, 250, 255, cv2.THRESH_BINARY)
-		ok, diff = cv2.threshold(diff, 254, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
-		#diff = autocrop(diff, threshold=50)
+		#_, diff = cv2.threshold(diff, 250, 255, cv2.THRESH_BINARY)
+		#diff = cv2.GaussianBlur(diff, (5,5), 0)
+		diff = cv2.multiply(diff, 2)
+		_, diff = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
 
 		s = frame_sum(diff)
 
 		diff = 255 - diff
 
-		cv2.imshow('diff', diff)
-		key = cv2.waitKey(wait_dur)
-		if key == ord(' '):
-			cv2.waitKey(0)
-		if key == ord('q'):
-			break
-		if key == ord('s'):
-			cv2.imwrite("output.png", diff)
+		if wait_dur >= 0:
+			#cv2.imshow("softsub", softsub_frame)
+			#cv2.imshow("hardsub", hardsub_frame)
+			cv2.imshow("diff", diff)
+			key = cv2.waitKey(wait_dur)
+			if key == ord(" "):
+				key = cv2.waitKey(0)
+			if key == ord("q"):
+				break
+			if key == ord("s"):
+				cv2.imwrite("output.png", diff)
 
 		t = softsub_t
 		if align_on_hardsubs:
@@ -201,19 +200,42 @@ with open(subtitles_path, "w") as f:
 			if sub_frame is not None:
 				sub_end = int(t * 1000)
 
-				text = ocr(sub_frame)
-				if len(text) > 0:
-					print("{} {}".format(timecode(sub_end), text))
+				if sub_end - sub_start > 300:
+					text = ocr(sub_frame)
+					if len(text) > 0:
+						print("{} {}".format(timecode(sub_end), text))
 
-					f.write("{}\n".format(sub_index))
-					f.write("{} --> {}\n".format(timecode(sub_start), timecode(sub_end)))
-					f.write(text+"\n\n")
+						f.write("{}\n".format(sub_index))
+						f.write("{} --> {}\n".format(timecode(sub_start), timecode(sub_end)))
+						f.write(text+"\n\n")
+					else:
+						print("{}: <skipped: no data>".format(timecode(sub_end)))
 				else:
-					print("{}: <skipped: no data>".format(sub_end))
+					print("{}: <skipped: too quick>".format(timecode(sub_end)))
 
 				sub_index += 1
 				sub_frame = None
 			in_sub = False
+
+	cv2.destroyAllWindows()
+
+print("Aligning videos on {} frames...".format(align_frames))
+
+softsub_video.set(cv2.CAP_PROP_POS_FRAMES, align_from * softsub_fps)
+hardsub_video.set(cv2.CAP_PROP_POS_FRAMES, align_from * hardsub_fps)
+softsub_key_frames = find_key_frames(softsub_video)
+hardsub_key_frames = find_key_frames(hardsub_video)
+softsub_video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+hardsub_video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+# pos_diff_sec = softsub_pos - hardsub_pos
+pos_diff_sec = match_keyframes(softsub_key_frames, hardsub_key_frames)
+print("pos_diff_sec={}".format(pos_diff_sec))
+
+print("Writing {} subtitles to {}...".format(subtitles_lang, subtitles_path))
+
+with open(subtitles_path, "w") as f:
+	extract_subs(f, softsub_video, hardsub_video, pos_diff_sec)
 
 softsub_video.release()
 hardsub_video.release()
