@@ -130,8 +130,14 @@ def timecode(ms):
 	return "{:02}:{:02}:{:02},{:03}".format(h, min, s, ms)
 
 replacements = [
+	# Unicode
 	("\n—", "\n-"),
 	("…", "..."),
+	("‘", "'"),
+
+	# French
+	("II", "Il"),
+	("I'", "l'"),
 ]
 
 def cleanup(text):
@@ -210,24 +216,26 @@ def extract_subs(f, softsub_video, hardsub_video, pos_diff_sec):
 			if sub_frame is None:
 				sub_frame = diff
 				sub_start = int(t * 1000)
-				print("{} - ".format(timecode(sub_start)), end="", flush=True)
+				print("{} ({:.2f}) - ".format(timecode(sub_start), s), end="", flush=True)
 		else:
 			if sub_frame is not None:
 				sub_end = int(t * 1000)
+
+				print("{} ({:.2f}) ".format(timecode(sub_end), s), end="")
 
 				if sub_end - sub_start > 300:
 					text = ocr(sub_frame)
 					text = cleanup(text)
 					if len(text) > 0:
-						print("{} {}".format(timecode(sub_end), text))
+						print(text)
 
 						f.write("{}\n".format(sub_index))
 						f.write("{} --> {}\n".format(timecode(sub_start), timecode(sub_end)))
 						f.write(text+"\n\n")
 					else:
-						print("{}: <skipped: no data>".format(timecode(sub_end)))
+						print("<skipped: no data>".format(timecode(sub_end)))
 				else:
-					print("{}: <skipped: too quick>".format(timecode(sub_end)))
+					print("<skipped: too quick>".format(timecode(sub_end)))
 
 				sub_index += 1
 				sub_frame = None
